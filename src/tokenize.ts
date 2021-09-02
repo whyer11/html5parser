@@ -109,6 +109,9 @@ function isWhiteSpace() {
 }
 
 function init(input: string) {
+  /**
+   * 初始状态被设置为了 字符串
+   */
   state = State.Literal;
   buffer = input;
   bufSize = input.length;
@@ -120,17 +123,40 @@ function init(input: string) {
   offset = 0;
 }
 
+/**
+ * 这个tokenize是怎么做的呢
+ * 本质上就是状态机
+ * 每次从字符串里面读取一个字符code出来,
+ * 不同的parse其实就每个状态的action,在A状态下输入一个字符code,parse告诉你当前的状态要不要转移,并且当前是不是已经生成了一个token了
+ * @param input
+ */
 export function tokenize(input: string): IToken[] {
   init(input);
   while (index < bufSize) {
+    /**
+     * 循环中不停的从input取每一个字符,赋值到全局变量上
+     */
     char = buffer.charCodeAt(index);
+
     switch (state) {
+      /**
+       * 当是普通字符串时,当一段html输入时,第一个字符就应该进这个case
+       * 明显是<, 我们看看他怎么处理的
+       *
+       * 看完了啥也没有处理 就把全局变量变成了beforeOpenTag,妈的什么叫 beforeOpenTag
+       */
       case State.Literal:
         parseLiteral();
         break;
+      /**
+       * 下面读取第二个字符 h ,因为<html></html> 麻
+       */
       case State.BeforeOpenTag:
         parseBeforeOpenTag();
         break;
+      /**
+       * 这个时候读取第三个字符了 t
+       */
       case State.OpeningTag:
         parseOpeningTag();
         break;
@@ -176,6 +202,10 @@ export function tokenize(input: string): IToken[] {
     }
     index++;
   }
+  /**
+   * 这里是做最后的收尾, 所有的字符串已经读完了,然后判断当前是什么状态?
+   * 本质上也是一个parse,只不过没有任何输入了
+   */
   switch (state) {
     case State.Literal:
     case State.BeforeOpenTag:
@@ -223,11 +253,55 @@ export function tokenize(input: string): IToken[] {
   return _tokens;
 }
 
+
+
+
+/**
+ * 全局唯一一个emit
+ *
+ * 综合<html>sometext</html> 脑内走下来
+ * kind就是当前要push到token里面的kind
+ * newState就是要转移的state,这个函数里面对下一个state的指定有两种情况,一种是碰到emit openTagEnd或者CloseTag,这种情况直接置为 State.Literal
+ * 另外一种情况就是使用参数指定的state,参数的state由不同的parse函数指定,当前字符所对应的parse会知道要不要转译状态.
+ *
+ *
+ * @param kind
+ * @param newState
+ * @param end
+ */
 function emitToken(kind: TokenKind, newState = state, end = index) {
+  /**
+   * 取 value, 但是第一个 < 进来的时候 kind 还是 TokenKind.Literal,   end没有传递,就是0 和sectionStart是一样的
+   * substring(0,0) 会得到一个空字符串
+   *
+   *
+   * 第N次进来时 这次是 <html> 读取到了 > 在 parseOpeningTag里面调用的,并且只有一个参数,kind = TokenKind.openTag
+   * 这次 value就有值了,substring(1,5)  拿到了 'html'
+   * 在读取到 > 的时候又触发了一个emit 这次 也只有一个参数 kind = TokenKind.openTagEnd
+   *
+   *
+   * 第n次 < 进来的时候,sectionStart应该是一段字符串的开头,end就是当前 < 这个玩意的index
+   * 这次value取到了,就是普通的字符串
+   *
+   */
   let value = buffer.substring(sectionStart, end);
+  /**
+   * 第一个< 进来的时候明显这个if进不去
+   *
+   * 第N个> 进来的时候,这个if明显进去了 拿到一个小写的value
+   * > 第二个emit 进不去
+   *
+   * 第n个 < 进来的时候,依然进不去
+   */
   if (kind === TokenKind.OpenTag || kind === TokenKind.CloseTag) {
     value = value.toLowerCase();
   }
+  /**
+   * 第一个<这个也进不去
+   *
+   *
+   * 第n个>来的时候进来了,但是既不是script 也不是 style
+   */
   if (kind === TokenKind.OpenTag) {
     if (value === 'script') {
       inScript = true;
@@ -235,30 +309,86 @@ function emitToken(kind: TokenKind, newState = state, end = index) {
       inStyle = true;
     }
   }
+  /**
+   * < 的时候这个也进不去
+   * > 的时候也进不去
+   *
+   */
   if (kind === TokenKind.CloseTag) {
     inScript = inStyle = false;
   }
+  /**
+   * 第一个 <
+   * kind === TokenKind.Literal true
+   * end === sectionStart true
+   * 然后整体取反 得到false 进不去
+   *
+   *
+   * > 进来的时候,这个if符合了,当在openingTag状态下的时候,一旦碰到>就直接生成一个token,记录了start,end,并且html作为value记录进去
+   * > 第二次emit的时候 end === sectionStart已经不是false了,所以这个if进不去
+   *
+   * 第n个 < 进来的时候 kind判断都是false ,end 判断也是false,所以进去了,然后 普通的文本也被提交了
+   */
   if (!((kind === TokenKind.Literal || kind === TokenKind.Whitespace) && end === sectionStart)) {
     // empty literal should be ignored
     tokens.push({ type: kind, start: sectionStart, end, value });
   }
+  /**
+   * <的时候进不去
+   *
+   * > 第一次emit的时候也进不去
+   * > 第二次emit的时候进去了,sectionStart重新开始了指向了>后面的一个字符,然后state又变成literal,看到这里的时候已经重新开始了
+   * 要么后面是<
+   *  就和 第一个<的故事一样,state变成了beforeOpenTag
+   * 要么后面是个普通的字符,<html>sometext</html>
+   *  这样的话就看看这些普通字符会不会变成token,我们继续回到上面,因为 'sometext' 读取的时候一直判断当前是不是< 如果是的话就emit了
+   *
+   *
+   *
+   */
   if (kind === TokenKind.OpenTagEnd || kind === TokenKind.CloseTag) {
     sectionStart = end + 1;
     state = State.Literal;
   } else {
+    /**
+     * <的时候:
+     * 0 = 0;
+     * state变成 beforeOpenTag
+     * 回去看第二个字符
+     *
+     *
+     * >的时候:
+     * end是>的index
+     * state是没有变的 还是OpeningTag,我草,为什么状态没有变?别着急,碰到>的时候一口气emit了两次
+     */
     sectionStart = end;
     state = newState;
   }
 }
 
+
+
+/*------------------  parse分界线  --------------------*/
+
+/**
+ * 说好的解析文本,搞到这里变成了直接判断当前输入的是不是 < 是的话调用 emitToken
+ */
 function parseLiteral() {
   if (char === Chars.Lt) {
+    /**
+     * 这里的emit的含义是,我认为当前已经是某一个token的结束了,我觉得可以提交,并且我要转移到下一个状态去
+     */
     // <
     emitToken(TokenKind.Literal, State.BeforeOpenTag);
   }
 }
 
 function parseBeforeOpenTag() {
+  /**
+   * 注意这个时候是 h进来了,是一个普普通通的字符串
+   *
+   * 这些inscript/ instyle 肯定进不去
+   */
   if (inScript || inStyle) {
     if (char === Chars.Sl) {
       state = State.ClosingTag;
@@ -268,9 +398,27 @@ function parseBeforeOpenTag() {
     }
     return;
   }
+  /**
+   * 判断当前这个字符是不是26个字母的小写或者大写 h是charCode返回的number 好的命中了
+   */
   if ((char >= Chars.La && char <= Chars.Lz) || (char >= Chars.Ua && char <= Chars.Uz)) {
+    /**
+     * 这哥们的注释也写了 <d 这种情况
+     * 继续改变状态 到 openingTag
+     * 好的我们梳理一下,
+     * 字符    current state        next state
+     *  <       literal           beforeOpenTag
+     *  h     beforeOpenTag         OpeningTag
+     *  t       OpeningTag
+     *  m       OpeningTag
+     *  l       OpeningTag
+     *  >
+     */
     // <d
     state = State.OpeningTag;
+    /**
+     * 这个时候将sectionStart设置为 h 的指针
+     */
     sectionStart = index;
   } else if (char === Chars.Sl) {
     // </
@@ -296,14 +444,35 @@ function parseBeforeOpenTag() {
 }
 
 function parseOpeningTag() {
+  /**
+   * 这个时候是读取 <html></html> 第三个字符的时候了 t
+   *
+   *
+   * 总结一下:
+   * 这里就是疯狂去找有没有改变状态的情况
+   * 在这个state里面就说明已经开始读取一个html的标签了 并且已经读取到第三个字符了
+   * 所以要判断 是不是空格,是不是闭合,是不是自闭合
+   *
+   * 如果以上都没有碰到,那么当前还是属于html标签标签的一部分
+   *
+   * 是空格吗? 绝壁不是
+   */
   if (isWhiteSpace()) {
     // <div ...
     emitToken(TokenKind.OpenTag, State.AfterOpenTag);
+
   } else if (char === Chars.Gt) {
+    /**
+     * 闭合了麻?
+     * 并没有
+     */
     // <div>
     emitToken(TokenKind.OpenTag);
     emitToken(TokenKind.OpenTagEnd);
   } else if (char === Chars.Sl) {
+    /**
+     * 我草 这里还有自闭合? <div/> 哈?
+     */
     // <div/
     emitToken(TokenKind.OpenTag, State.ClosingOpenTag);
   }
